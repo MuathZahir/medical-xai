@@ -11,7 +11,7 @@ from main import find_patients_with_different_responses, modify_patient_data
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
 # API endpoint URL
-API_BASE_URL = "http://localhost:5000"
+API_BASE_URL = "https://xai-api-osmy7.ondigitalocean.app/"
 
 def test_health_endpoint():
     """Test the health check endpoint"""
