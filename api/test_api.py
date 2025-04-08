@@ -6,8 +6,8 @@ import time
 from datetime import datetime
 import sys
 import os
+import random
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from main import find_patients_with_different_responses, modify_patient_data
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
 # API endpoint URL
@@ -73,6 +73,30 @@ def convert_dataframe_to_api_format(user_data, user_id):
         api_requests.append(request_body)
     
     return api_requests
+
+def find_patients_with_different_responses(dataset, num_patients=4):
+    """
+    Find patients with different response levels
+    
+    Args:
+        dataset: The full dataset
+        num_patients: Number of patients to find
+        
+    Returns:
+        List of user codes for patients with different response levels
+    """
+    # Get user codes with sufficient data for both target classes
+    user_counts = dataset.groupby('user_code')['target'].value_counts().unstack()
+    valid_users = user_counts[(user_counts[0] >= 50) & (user_counts[1] >= 50)].index.tolist()
+    
+    if len(valid_users) < num_patients:
+        print(f"Warning: Only {len(valid_users)} users have sufficient data for both classes.")
+        return valid_users
+    
+    # Shuffle the list to get random users
+    random.shuffle(valid_users)
+    
+    return valid_users[:num_patients]
 
 def send_data_to_api(request_bodies, user_id):
     """
