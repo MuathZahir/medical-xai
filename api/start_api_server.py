@@ -2,6 +2,7 @@
 Simple script to start the API server
 """
 from api import app
+import os
 
 if __name__ == "__main__":
     print("Starting Medical AI API server...")
