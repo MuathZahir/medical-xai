@@ -244,6 +244,16 @@ class VitalSignForecaster:
                 continue
                 
             try:
+                # Check if we have enough data for evaluation
+                if len(test_data) < (self.sequence_length + 25):
+                    print(f"Warning: Not enough data to evaluate {feature_name}. Need at least {self.sequence_length + 25} points.")
+                    evaluation_metrics[feature_name] = {
+                        'mse': float('nan'),
+                        'mae': float('nan'),
+                        'r2': float('nan')
+                    }
+                    continue
+                
                 # Create sequences for testing
                 X_test, y_test = self.create_sequences(test_data, feature_name)
                 
@@ -268,5 +278,12 @@ class VitalSignForecaster:
                 
             except Exception as e:
                 print(f"Error evaluating model for {feature_name}: {e}")
+                # Add placeholder metrics
+                evaluation_metrics[feature_name] = {
+                    'mse': float('nan'),
+                    'mae': float('nan'),
+                    'r2': float('nan'),
+                    'error': str(e)
+                }
         
         return evaluation_metrics

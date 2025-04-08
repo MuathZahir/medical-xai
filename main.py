@@ -3,100 +3,59 @@ import numpy as np
 from datetime import datetime, timedelta
 from XAI import MedicalXAISystem
 import matplotlib.pyplot as plt
+import random
 
-# def generate_synthetic_data(num_days=30, readings_per_day=24):
-#     """Generate synthetic training data and heart rate historical data"""
-#     # Create timestamps for heart rate data
-#     timestamps = pd.date_range(
-#         start='2024-01-01',
-#         periods=num_days * readings_per_day,
-#         freq='H'
-#     )
-    
-#     # Generate heart rate data with daily patterns
-#     hour_of_day = timestamps.hour
-#     base_heart_rate = 70 + 10 * np.sin(2 * np.pi * hour_of_day / 24)
-#     heart_rate = base_heart_rate + np.random.normal(0, 5, len(timestamps))
-    
-#     # Create heart rate historical data
-#     historical_data = pd.DataFrame({
-#         'timestamp': timestamps,
-#         'heart_rate': heart_rate
-#     })
-    
-#     # Generate classification training data
-#     num_samples = 1000
-#     classification_data = pd.DataFrame({
-#         'heart_rate': np.random.normal(75, 10, num_samples),
-#         'blood_oxygen': np.random.normal(97, 2, num_samples),
-#         'sleep_quality': np.random.beta(5, 2, num_samples),
-#         'steps': np.random.negative_binomial(10, 0.5, num_samples) * 100,
-#     })
-    
-#     # Generate labels
-#     conditions = [
-#         (classification_data['heart_rate'] > 100) |
-#         (classification_data['blood_oxygen'] < 95) |
-#         (classification_data['sleep_quality'] < 0.3),
-        
-#         (classification_data['heart_rate'] > 120) |
-#         (classification_data['blood_oxygen'] < 90) |
-#         (classification_data['sleep_quality'] < 0.2)
-#     ]
-#     choices = [1, 2]  # Warning, Emergency
-#     classification_data['disease_level'] = np.select(conditions, choices, default=0)
-    
-#     return historical_data, classification_data
-
-# def generate_simulation_day(anomaly_factor=1.5):
-#     """Generate a simulated day of vital signs"""
-#     # Generate one day of data with timestamps
-#     timestamps = pd.date_range(
-#         start=datetime.now().replace(hour=0, minute=0, second=0),
-#         periods=24,
-#         freq='H'
-#     )
-    
-#     # Generate baseline heart rate pattern
-#     hour_of_day = timestamps.hour
-#     base_heart_rate = 70 + 10 * np.sin(2 * np.pi * hour_of_day / 24)
-    
-#     # Add anomaly
-#     heart_rate = base_heart_rate * anomaly_factor + np.random.normal(0, 2, 24)
-    
-#     # Generate other vitals
-#     simulation_data = pd.DataFrame({
-#         'timestamp': timestamps,
-#         'heart_rate': heart_rate,
-#         'blood_oxygen': np.random.normal(97, 1, 24),
-#         'sleep_quality': np.random.beta(5, 2, 24),
-#         'steps': np.random.poisson(500, 24)
-#     })
-    
-#     return simulation_data
-
-def plot_results(results):
+def plot_results(results, patient_id=None, save_fig=False):
     """Plot and display analysis results"""
-    # Show feature graphs
-    if 'feature_graphs' in results:
+    title_prefix = f"Patient {patient_id}: " if patient_id else ""
+    
+    # Show the most important vital sign graph
+    if 'most_important_vital' in results and results['most_important_vital'] in results['feature_graphs']:
+        vital = results['most_important_vital']
+        fig = results['feature_graphs'][vital]
+        plt.figure(fig.number)
+        plt.title(f"{title_prefix}{vital.replace('_', ' ').title()} - {results['response_level']}")
+        
+        if save_fig and patient_id:
+            plt.savefig(f"patient_{patient_id}_{vital}_graph.png")
+        
+        plt.show()
+    elif 'feature_graphs' in results:
+        # If most important vital not available, show the first graph
         for feature, graph in results['feature_graphs'].items():
             plt.figure(graph.number)
+            plt.title(f"{title_prefix}{feature.replace('_', ' ').title()} - {results['response_level']}")
+            
+            if save_fig and patient_id:
+                plt.savefig(f"patient_{patient_id}_{feature}_graph.png")
+            
             plt.show()
+            break  # Only show the first graph
     else:
         # Backward compatibility
         plt.figure(results['heart_rate_graph'].number)
+        plt.title(f"{title_prefix}Heart Rate - {results['response_level']}")
+        
+        if save_fig and patient_id:
+            plt.savefig(f"patient_{patient_id}_heart_rate_graph.png")
+        
         plt.show()
     
     # Print analysis results
-    print("\nAnalysis Results:")
+    print(f"\n{title_prefix}Analysis Results:")
     print(f"Response Level: {results['response_level']}")
     print(f"Classification Score: {results['classification_score']:.3f}")
     print(f"Danger Metric: {results['danger_metric']:.3f}")
     
+    # Print text explanation
+    if 'text_explanation' in results:
+        print("\nExplanation:")
+        print(results['text_explanation'])
+    
     print("\nFeature Importance Analysis:")
     print(f"Most Important Feature: {results['most_important_feature']}")
-    print("\nAll Features Ranked by Importance:")
-    for feature, importance in results['feature_importance']:
+    print("\nTop 5 Features Ranked by Importance:")
+    for feature, importance in results['feature_importance'][:5]:
         print(f"  {feature}: {abs(importance):.3f}")
     
     # Print unusualness metrics if available
@@ -104,28 +63,33 @@ def plot_results(results):
         print("\nUnusualness Metrics:")
         for feature, (u_t, _) in results['unusualness'].items():
             print(f"  {feature}: Mean Deviation = {np.mean(u_t):.3f}")
+    
+    print("-" * 80)
 
-if __name__ == "__main__":
-    # Load the real dataset
-    print("Loading dataset...")
-    dataset = pd.read_csv('Dataset/deduplicated_data_.csv')
+def analyze_patient(dataset, user_code, xai_system, forecasting_features):
+    """
+    Analyze a specific patient from the dataset
     
-    # Convert date strings to datetime objects
-    dataset['date'] = pd.to_datetime(dataset['date'])
+    Args:
+        dataset: The full dataset
+        user_code: The user code of the patient to analyze
+        xai_system: The initialized XAI system
+        forecasting_features: List of features to use for forecasting
+        
+    Returns:
+        Analysis results for the patient
+    """
+    # Get data for the specific user and sort by date
+    user_data = dataset[dataset['user_code'] == user_code].sort_values('date')
     
-    # Select a user with sufficient data for analysis
-    user_counts = dataset['user_code'].value_counts()
-    selected_user = user_counts.index[0]  # User with most data points
-    print(f"Selected user {selected_user} with {user_counts.iloc[0]} data points")
-    
-    # Get data for selected user and sort by date
-    user_data = dataset[dataset['user_code'] == selected_user].sort_values('date')
+    if len(user_data) < 50:  # Ensure we have enough data
+        print(f"Not enough data for user {user_code}. Skipping.")
+        return None
     
     # Prepare data for classification
     classification_data = user_data.drop(['Unnamed: 0', 'date', 'user_code', 'target', 'days_to_symptoms'], axis=1)
     
     # Create historical data for forecasting
-    # We'll include multiple time series features
     historical_data = pd.DataFrame({
         'timestamp': user_data['date'],
         'heart_rate': user_data['resting_pulse'],
@@ -133,19 +97,10 @@ if __name__ == "__main__":
         'sleep_quality': user_data['sleep_duration']
     })
     
-    # Define which features to use for forecasting
-    forecasting_features = ['heart_rate', 'steps', 'sleep_quality']
-    
-    # Initialize the XAI system with the pre-trained classification model
-    print("\nInitializing XAI system with pre-trained model...")
-    xai_system = MedicalXAISystem(model_path='tcn_final_model.h5')
-    
-    # Update the classifier's scaler using the real dataset and train the forecasting models
-    print("\nUpdating scaler and training forecasting models...")
+    # Train the forecasting models for this patient
     xai_system.train(classification_data, historical_data, forecasting_features)
     
-    # Generate simulation data (use the most recent data points)
-    print("\nPreparing recent data for analysis...")
+    # Use the most recent data points for analysis
     recent_data_size = 24  # Use last 24 data points for analysis
     simulation_data = user_data.iloc[-recent_data_size:].copy()
     
@@ -162,11 +117,147 @@ if __name__ == "__main__":
         if col not in simulation_data.columns and col not in ['timestamp', 'heart_rate', 'steps', 'sleep_quality']:
             simulation_data[col] = user_data.iloc[-recent_data_size:][col].values
     
-    print("\nAnalyzing data...")
+    # Analyze the patient's data
     results = xai_system.analyze(simulation_data, historical_data)
     
-    # Plot and display results
-    print("\nPlotting results...")
-    plot_results(results)
+    return results
 
-# comment
+def find_patients_with_different_responses(dataset, num_patients=4):
+    """
+    Find patients with different response levels
+    
+    Args:
+        dataset: The full dataset
+        num_patients: Number of patients to find
+        
+    Returns:
+        List of user codes for patients with different response levels
+    """
+    # Get unique user codes with sufficient data
+    user_counts = dataset['user_code'].value_counts()
+    valid_users = user_counts[user_counts >= 50].index.tolist()
+    
+    if len(valid_users) < num_patients:
+        print(f"Warning: Only {len(valid_users)} users have sufficient data.")
+        return valid_users
+    
+    # Shuffle the list to get random users
+    random.shuffle(valid_users)
+    
+    return valid_users[:num_patients]
+
+def modify_patient_data(user_data, severity_level):
+    """
+    Modify patient data to simulate different severity levels
+    
+    Args:
+        user_data: DataFrame containing patient data
+        severity_level: Level of severity to simulate (0-3)
+        
+    Returns:
+        Modified user data
+    """
+    modified_data = user_data.copy()
+    
+    # Modify vital signs based on severity level
+    if severity_level == 1:  # Slight Change
+        # Slightly increase resting pulse
+        modified_data['resting_pulse'] = modified_data['resting_pulse'] * 1.1
+        # Slightly decrease steps
+        modified_data['steps_count'] = modified_data['steps_count'] * 0.9
+    elif severity_level == 2:  # Warning
+        # Moderately increase resting pulse
+        modified_data['resting_pulse'] = modified_data['resting_pulse'] * 1.3
+        # Moderately decrease steps
+        modified_data['steps_count'] = modified_data['steps_count'] * 0.7
+        # Slightly decrease sleep duration
+        modified_data['sleep_duration'] = modified_data['sleep_duration'] * 0.9
+    elif severity_level == 3:  # Serious Condition
+        # Significantly increase resting pulse
+        modified_data['resting_pulse'] = modified_data['resting_pulse'] * 1.5
+        # Significantly decrease steps
+        modified_data['steps_count'] = modified_data['steps_count'] * 0.4
+        # Significantly decrease sleep duration
+        modified_data['sleep_duration'] = modified_data['sleep_duration'] * 0.7
+    
+    return modified_data
+
+if __name__ == "__main__":
+    # Load the real dataset
+    print("Loading dataset...")
+    dataset = pd.read_csv('Dataset/deduplicated_data_.csv')
+    
+    # Convert date strings to datetime objects
+    dataset['date'] = pd.to_datetime(dataset['date'])
+    
+    # Define which features to use for forecasting
+    forecasting_features = ['heart_rate', 'steps', 'sleep_quality']
+    
+    # Initialize the XAI system with the pre-trained classification model
+    print("\nInitializing XAI system with pre-trained model...")
+    xai_system = MedicalXAISystem(
+        model_path='tcn_final_model.h5',
+        theta_healthy=0.2,    # Threshold for Healthy
+        theta_slight=0.4,     # Threshold for Slight Change
+        theta_warning=0.6,    # Threshold for Warning
+        theta_serious=0.8     # Threshold for Serious Condition
+    )
+    
+    # Find patients for analysis
+    print("\nFinding patients for analysis...")
+    patient_ids = find_patients_with_different_responses(dataset)
+    
+    # Analyze each patient with different severity levels
+    print("\nAnalyzing patients with different severity levels...")
+    
+    # Create a list to store patient results
+    all_results = []
+    
+    # Process each patient
+    for i, patient_id in enumerate(patient_ids):
+        print(f"\nProcessing Patient {i+1} (ID: {patient_id})...")
+        
+        # Get data for the patient
+        user_data = dataset[dataset['user_code'] == patient_id].sort_values('date')
+        
+        # # Create different severity levels
+        # severity_level = i % 4  # 0: Healthy, 1: Slight Change, 2: Warning, 3: Serious Condition
+        
+        # # Modify the data based on severity level
+        # if severity_level > 0:
+        #     modified_data = modify_patient_data(user_data, severity_level)
+        # else:
+        #     modified_data = user_data
+        
+        # # Create a temporary dataset with this patient's modified data
+        # temp_dataset = dataset.copy()
+        # temp_dataset.loc[temp_dataset['user_code'] == patient_id] = modified_data
+        
+        # Analyze the patient
+        results = analyze_patient(user_data, patient_id, xai_system, forecasting_features)
+        
+        if results:
+            # Add patient ID to results
+            results['patient_id'] = i+1
+            results['user_code'] = patient_id
+            
+            # Store results
+            all_results.append(results)
+            
+            # Plot and display results
+            plot_results(results, patient_id=i+1, save_fig=True)
+    
+    # Print summary of all patients
+    print("\n" + "="*40)
+    print("SUMMARY OF PATIENT ANALYSIS")
+    print("="*40)
+    
+    for results in all_results:
+        patient_id = results['patient_id']
+        user_code = results['user_code']
+        response_level = results['response_level']
+        danger_metric = results['danger_metric']
+        
+        print(f"Patient {patient_id} (ID: {user_code}): {response_level} - COVID-19 Risk: {danger_metric:.1%}")
+    
+    print("\nAnalysis complete.")
