@@ -5,6 +5,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 import sys
 import os
+import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from XAI import MedicalXAISystem
 import random
@@ -13,6 +14,9 @@ app = Flask(__name__)
 
 # Initialize the XAI system with the pre-trained classification model
 model_path = os.path.join(os.path.dirname(__file__), 'tcn_final_model.h5')
+
+# File to store cached predictions
+CACHE_FILE = os.path.join(os.path.dirname(__file__), 'cached_predictions.json')
 
 # Global variable to store historical data for each user
 user_data_store = {}
@@ -28,6 +32,42 @@ forecasting_features = ['heart_rate', 'steps', 'sleep_quality']
 
 # Pre-defined demo users
 DEMO_USERS = ["demo_user_1", "demo_user_2", "demo_user_3", "demo_user_4"]
+
+def save_predictions_to_disk():
+    """Save cached predictions to disk for persistence"""
+    try:
+        # Convert datetime objects to strings in the cached predictions
+        serializable_cache = {}
+        for user_id, prediction in cached_predictions.items():
+            serializable_cache[user_id] = {
+                "response_level": prediction["response_level"],
+                "danger_metric": float(prediction["danger_metric"]),
+                "explanation": prediction["explanation"]
+            }
+            
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(serializable_cache, f)
+        print(f"Cached predictions saved to {CACHE_FILE}")
+        return True
+    except Exception as e:
+        print(f"Error saving predictions to disk: {e}")
+        return False
+
+def load_predictions_from_disk():
+    """Load cached predictions from disk"""
+    global cached_predictions
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'r') as f:
+                cached_predictions = json.load(f)
+            print(f"Loaded cached predictions from {CACHE_FILE}")
+            return True
+        else:
+            print(f"Cache file {CACHE_FILE} not found.")
+            return False
+    except Exception as e:
+        print(f"Error loading predictions from disk: {e}")
+        return False
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -46,10 +86,12 @@ def predict():
     try:
         # Check if we have cached predictions for all demo users
         if not cached_predictions:
-            return jsonify({
-                "status": "error",
-                "message": "Predictions not yet cached. Please wait for initialization to complete."
-            }), 400
+            # Try to load from disk first
+            if not load_predictions_from_disk():
+                return jsonify({
+                    "status": "error",
+                    "message": "Predictions not yet cached. Please wait for initialization to complete."
+                }), 400
             
         # Return the cached predictions with current timestamp
         return jsonify({
@@ -326,6 +368,16 @@ def load_demo_data():
     """
     Load data for the demo users from the CSV file
     """
+    global cached_predictions
+    
+    # Try to load cached predictions from disk first
+    if load_predictions_from_disk():
+        if all(user in cached_predictions for user in DEMO_USERS):
+            print("All demo user predictions loaded from disk cache. Skipping data processing.")
+            return
+        else:
+            print("Some demo users missing from disk cache. Continuing with data processing.")
+    
     try:
         # Load the dataset
         data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Dataset", "deduplicated_data_.csv")
@@ -351,6 +403,11 @@ def load_demo_data():
         for i, patient_id in enumerate(selected_patients):
             user_id = DEMO_USERS[i]
             
+            # Skip if we already have this user's prediction in the cache
+            if user_id in cached_predictions:
+                print(f"Using cached prediction for {user_id} from disk")
+                continue
+                
             # Get data for this patient
             patient_data = dataset[dataset['user_code'] == patient_id].copy()
             
@@ -457,6 +514,9 @@ def load_demo_data():
                     "explanation": f"Error during analysis: {str(e)}"
                 }
                 print(f"Using error response for user {user_id}")
+        
+        # Save all predictions to disk for persistence
+        save_predictions_to_disk()
         
         print("\nDemo initialization complete! All predictions cached and ready for fast access.")
         
