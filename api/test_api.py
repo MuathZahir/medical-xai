@@ -7,11 +7,12 @@ from datetime import datetime
 import sys
 import os
 import random
+import argparse
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
 # API endpoint URL
-API_BASE_URL = "https://xai-api-osmy7.ondigitalocean.app/"
+API_BASE_URL = "http://localhost:8080"
 
 def test_health_endpoint():
     """Test the health check endpoint"""
@@ -128,26 +129,31 @@ def send_data_to_api(request_bodies, user_id):
             "vitals": body["vitals"]
         })
     
-    # Send the bulk request
+    # Send bulk data to the API
     try:
-        response = requests.post(bulk_url, json=bulk_payload)
-        print(f"Bulk submission status: {response.status_code}")
+        bulk_response = requests.post(bulk_url, json=bulk_payload)
+        print(f"Bulk Data Response: Status {bulk_response.status_code}")
+        print(bulk_response.json())
         
-        if response.status_code == 200:
-            data = response.json()
-            print(f"Data points collected: {data.get('data_points_collected', 0)}")
-            print(f"Prediction available: {data.get('prediction_available', False)}")
+        # Check if we have enough data for prediction
+        response_data = bulk_response.json()
+        if response_data.get("prediction_available", False):
+            print("\nSufficient data available, making prediction request...")
             
-            # If prediction is available, make a predict call to get the results
-            if data.get('prediction_available', False):
-                # Use the last data point for the prediction request
-                final_response = requests.post(predict_url, json=request_bodies[-1])
-                print(f"Prediction request status: {final_response.status_code}")
-                return final_response
+            # Make prediction request (only requires user_id now)
+            prediction_payload = {
+                "user_id": user_id
+            }
             
-        return response
+            prediction_response = requests.post(predict_url, json=prediction_payload)
+            print(f"Prediction Response: Status {prediction_response.status_code}")
+            return prediction_response
+        else:
+            print(f"Not enough data for prediction yet. Current count: {response_data.get('data_points_collected', 0)}")
+            return bulk_response
+    
     except Exception as e:
-        print(f"Error during bulk submission: {e}")
+        print(f"Error sending data to API: {e}")
         return None
 
 def reset_user_data(user_id):
@@ -195,24 +201,22 @@ def evaluate_predictions(user_data, api_prediction):
     actual_status = np.round(np.mean(actual_values))
     
     # Map API response levels to binary values for comparison
-    response_level = api_prediction.get('analysis', {}).get('response_level', '')
+    response_level = api_prediction.get('prediction', {}).get('response_level', '')
     predicted_status = 0
     
     if response_level in ['Warning', 'Serious Condition']:
         predicted_status = 1  # COVID-19 positive
     
-    # Get classification score and danger metric
-    classification_score = api_prediction.get('analysis', {}).get('classification_score', 0)
-    danger_metric = api_prediction.get('analysis', {}).get('danger_metric', 0)
+    # Get danger metric
+    danger_metric = api_prediction.get('prediction', {}).get('danger_metric', 0)
     
     # Create evaluation results
     evaluation = {
-        'actual_status': int(actual_status),
-        'predicted_status': int(predicted_status),
-        'response_level': response_level,
-        'classification_score': classification_score,
-        'danger_metric': danger_metric,
-        'match': int(predicted_status) == int(actual_status)
+        "actual_status": int(actual_status),
+        "predicted_status": predicted_status,
+        "match": int(actual_status) == predicted_status,
+        "danger_metric": danger_metric,
+        "response_level": response_level,
     }
     
     return evaluation
@@ -276,51 +280,90 @@ def print_evaluation_summary(evaluations):
         print(f"Error calculating metrics: {e}")
 
 def main():
-    print("=" * 50)
-    print("TESTING MEDICAL AI API")
-    print("=" * 50)
+    """Main function to test the API"""
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Test the Medical AI API with different options')
+    parser.add_argument('--no-upload', action='store_true', help='Skip uploading data (use existing data)')
+    parser.add_argument('--no-reset', action='store_true', help='Do not reset user data before testing')
+    parser.add_argument('--predict-only', action='store_true', help='Only make prediction requests without any data upload')
+    parser.add_argument('--user-id', type=str, help='Specific user ID to test with')
+    args = parser.parse_args()
     
-    # Test health endpoint
-    print("\nTesting health endpoint...")
-    if not test_health_endpoint():
-        print("Health endpoint failed. Please ensure the API server is running.")
-        return
-
-    # Load the dataset
-    print("\nLoading dataset...")
+    # Load test data
+    data_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Dataset", "deduplicated_data_.csv")
     try:
-        dataset = pd.read_csv('Dataset/deduplicated_data_.csv')
-        # Convert date strings to datetime objects
+        dataset = pd.read_csv(data_path)
+        # Convert 'date' column to datetime
         dataset['date'] = pd.to_datetime(dataset['date'])
+        print(f"Loaded dataset with {len(dataset)} samples.")
     except Exception as e:
         print(f"Error loading dataset: {e}")
         return
     
-    # Find patients for analysis
-    print("\nFinding patients for analysis...")
-    patient_ids = find_patients_with_different_responses(dataset)
+    # Test health endpoint
+    if not test_health_endpoint():
+        print("Health endpoint check failed. Exiting.")
+        return
     
-    # Test with different patients and severity levels
+    # If predict-only mode is activated, just make prediction requests
+    if args.predict_only:
+        user_id = args.user_id if args.user_id else "test_user_1"
+        print(f"\nMaking prediction request for user {user_id} (predict-only mode)...")
+        
+        # Make prediction request
+        prediction_payload = {
+            "user_id": user_id
+        }
+        
+        try:
+            prediction_response = requests.post(f"{API_BASE_URL}/api/v1/predict", json=prediction_payload)
+            print(f"Prediction Response: Status {prediction_response.status_code}")
+            if prediction_response.status_code == 200:
+                results = prediction_response.json()
+                if "prediction" in results:
+                    prediction = results.get("prediction", {})
+                    print("\nAnalysis Results:")
+                    print(f"Response Level: {prediction.get('response_level')}")
+                    print(f"Danger Metric: {prediction.get('danger_metric'):.3f}")
+                    print("\nText Explanation:")
+                    print(prediction.get("explanation"))
+                else:
+                    print("No prediction in response. Verify that enough data was previously uploaded.")
+            else:
+                print(f"Error: {prediction_response.text}")
+        except Exception as e:
+            print(f"Error making prediction: {e}")
+        return
+    
+    # Find a few patients for testing
+    test_patients = find_patients_with_different_responses(dataset, num_patients=4)
+    print(f"Selected {len(test_patients)} patients for testing.")
+    
     all_results = []
     all_evaluations = []
     
-    for i, patient_id in enumerate(patient_ids):
-        # Create a unique user ID for the API
-        user_id = f"test_user_{i+1}"
+    # Process each patient
+    for i, patient_id in enumerate(test_patients):
+        user_id = args.user_id if args.user_id else f"test_user_{i+1}"
         
-        print(f"\nProcessing Patient {i+1} (ID: {patient_id})...")
-        print(f"Using API User ID: {user_id}")
+        # Reset user data if not disabled
+        if not args.no_reset:
+            reset_user_data(user_id)
+            print(f"Reset data for user {user_id}")
+        else:
+            print(f"Skipping data reset for user {user_id}")
         
-        # Reset any existing data for this test user
-        reset_user_data(user_id)
+        # Get data for this patient
+        patient_data = dataset[dataset['user_code'] == patient_id].copy()
         
-        # Get data for the patient
-        user_data = dataset[dataset['user_code'] == patient_id].sort_values('date')
-
-        # Extract diseased and healthy data
-        diseased_data = user_data[user_data['target'] == 1]
-        healthy_data = user_data[user_data['target'] == 0]
-
+        # Split into 'healthy' (target=0) and 'diseased' (target=1)
+        healthy_data = patient_data[patient_data['target'] == 0]
+        diseased_data = patient_data[patient_data['target'] == 1]
+        
+        print(f"\nPatient {i+1} (ID: {patient_id}):")
+        print(f"  Healthy data points: {len(healthy_data)}")
+        print(f"  Diseased data points: {len(diseased_data)}")
+        
         # Randomly select diseased or healthy data to send to API
         if (diseased_data.empty or len(diseased_data) < 10) and (healthy_data.empty or len(healthy_data) < 10):
             print("Not enough data for both diseased and healthy cases. Skipping this patient.")
@@ -335,9 +378,22 @@ def main():
         # Convert the dataframe data to API request format
         api_requests = convert_dataframe_to_api_format(user_data, user_id)
         
-        # Send the data to the API
-        print(f"\nSending {len(api_requests)} data points to API for Patient {i+1}...")
-        final_response = send_data_to_api(api_requests, user_id)
+        # Send the data to the API if not skipped
+        final_response = None
+        if not args.no_upload:
+            print(f"\nSending {len(api_requests)} data points to API for Patient {i+1}...")
+            final_response = send_data_to_api(api_requests, user_id)
+        else:
+            print("\nSkipping data upload, making direct prediction request...")
+            # Make prediction request
+            prediction_payload = {
+                "user_id": user_id
+            }
+            try:
+                final_response = requests.post(f"{API_BASE_URL}/api/v1/predict", json=prediction_payload)
+            except Exception as e:
+                print(f"Error making prediction: {e}")
+                continue
         
         # Check the user's history
         print(f"\nChecking history for User {user_id}...")
@@ -347,34 +403,28 @@ def main():
         if final_response and final_response.status_code == 200:
             results = final_response.json()
             
-            if results.get("prediction_available", False):
+            if "prediction" in results:
                 # Extract and store results
-                analysis = results.get("analysis", {})
+                prediction = results.get("prediction", {})
                 
                 result_summary = {
                     "patient_id": i+1,
                     "user_code": patient_id,
                     "api_user_id": user_id,
-                    "response_level": analysis.get("response_level"),
-                    "classification_score": analysis.get("classification_score"),
-                    "danger_metric": analysis.get("danger_metric"),
-                    "text_explanation": analysis.get("text_explanation"),
-                    "most_important_feature": analysis.get("most_important_feature"),
-                    "feature_importance": results.get("feature_importance", [])
+                    "response_level": prediction.get("response_level"),
+                    "danger_metric": prediction.get("danger_metric"),
+                    "text_explanation": prediction.get("explanation"),
+                    "timestamp": results.get("timestamp")
                 }
                 
                 all_results.append(result_summary)
                 
                 # Print results
                 print("\nAnalysis Results:")
-                print(f"Response Level: {analysis.get('response_level')}")
-                print(f"Classification Score: {analysis.get('classification_score'):.3f}")
-                print(f"Danger Metric: {analysis.get('danger_metric'):.3f}")
+                print(f"Response Level: {prediction.get('response_level')}")
+                print(f"Danger Metric: {prediction.get('danger_metric'):.3f}")
                 print("\nText Explanation:")
-                print(analysis.get("text_explanation"))
-                print("\nFeature Importance Analysis:")
-                for feature in results.get("feature_importance", []):
-                    print(f"  {feature.get('feature')}: {feature.get('importance'):.3f}")
+                print(prediction.get("explanation"))
                 
                 # Compare API prediction with actual values in dataset
                 print("\nComparing prediction with actual values...")
@@ -386,22 +436,29 @@ def main():
                     print(f"Actual COVID-19 status: {'Positive' if evaluation['actual_status'] == 1 else 'Negative'}")
                     print(f"Predicted status: {'Positive' if evaluation['predicted_status'] == 1 else 'Negative'}")
                     print(f"Match: {'Yes' if evaluation['match'] else 'No'}")
+            else:
+                print("No prediction in response. Verify that enough data was submitted.")
+                
+        # Stop after first patient if using specified user ID
+        if args.user_id:
+            break
     
     # Print summary of all patients
-    print("\n" + "="*40)
-    print("SUMMARY OF PATIENT ANALYSIS")
-    print("="*40)
-    
-    for results in all_results:
-        patient_id = results['patient_id']
-        user_code = results['user_code']
-        response_level = results['response_level']
-        danger_metric = results['danger_metric']
+    if all_results:
+        print("\n" + "="*40)
+        print("SUMMARY OF PATIENT ANALYSIS")
+        print("="*40)
         
-        print(f"Patient {patient_id} (ID: {user_code}): {response_level} - COVID-19 Risk: {danger_metric:.1%}")
-    
-    # Print evaluation metrics summary
-    print_evaluation_summary(all_evaluations)
+        for results in all_results:
+            patient_id = results['patient_id']
+            user_code = results['user_code']
+            response_level = results['response_level']
+            danger_metric = results['danger_metric']
+            
+            print(f"Patient {patient_id} (ID: {user_code}): {response_level} - COVID-19 Risk: {danger_metric:.3f}")
+        
+        # Print evaluation metrics summary
+        print_evaluation_summary(all_evaluations)
     
     print("\nAPI Testing complete.")
 
