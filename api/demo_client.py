@@ -29,7 +29,8 @@ def test_health_check(base_url):
 def get_predictions(base_url):
     """Get predictions for all demo users"""
     try:
-        response = requests.post(f"{base_url}/api/v1/predict")
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(f"{base_url}/api/v1/predict", json={}, headers=headers)
         return response.status_code, response.json()
     except Exception as e:
         return 500, {"error": str(e)}
